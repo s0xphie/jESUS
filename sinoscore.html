@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SINOSCORE</title>
+<style>
+  html,body{margin:0;background:#2a2630;display:flex;justify-content:center;
+    align-items:flex-start;min-height:100%;font-family:Georgia,'Times New Roman',serif}
+  #plate{position:relative;width:min(100vw,1500px);line-height:0}
+  #plate img{width:100%;display:block}
+  .ov{position:absolute;line-height:1.25;pointer-events:none}
+  .tick{color:#2e8b3f;font-weight:bold;opacity:0;transition:opacity .18s}
+  .tick.on{opacity:1}
+  .col{position:absolute;border:1.6px solid #2e8b3f;border-radius:4px;
+    background:rgba(46,139,63,.13);opacity:0;transition:opacity .12s}
+  .col.on{opacity:1}
+  .col.done{opacity:.42;background:rgba(46,139,63,.07)}
+  #dp{position:absolute;left:30.5%;top:6.2%;width:23%;
+    border:1px solid #b9b3a8;background:rgba(255,255,255,.82);border-radius:3px;
+    padding:.7% .9%;line-height:1.4;color:#241f2e}
+  #dp h4{margin:0 0 .35em;font-weight:normal;font-style:italic;font-size:1em}
+  #dp p{margin:0 0 .3em}
+  #dp a{color:#6a4fb0}
+  #verdict{position:absolute;left:57%;top:33.2%;width:38%;color:#2e8b3f;
+    opacity:0;transition:opacity .3s;line-height:1.35}
+  #verdict.on{opacity:1}
+  #play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:9%;aspect-ratio:1;border-radius:50%;border:2px solid #241f2e;
+    background:rgba(255,255,255,.86);color:#241f2e;font-size:2.2vw;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;transition:opacity .3s}
+  #play:hover{background:#fff;border-color:#8a2f28;color:#8a2f28}
+  #play.gone{opacity:0;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="plate">
+  <img id="img" src="sinoscore.png" alt="Sinoscore plate">
+
+  <div id="dp" class="ov">
+    <h4>DRAMATIS PERSONAE</h4>
+    <p>ROBOT, a fictional robot.</p>
+    <p>Brackets, the placeholder.</p>
+    <p>Characters, which are presented like
+       <a href="https://esolangs.org/wiki/Shakespeare">SPL</a>
+       and added to the script via [Brackets].</p>
+    <p>Jesus, literally Jesus the Nazarene in the flesh!</p>
+  </div>
+
+  <div id="verdict" class="ov"></div>
+  <button id="play" aria-label="play">&#9654;</button>
+</div>
+
+<script>
+/* ---------------- the two machines ---------------- */
+const SCORE = [
+  {spk:"ROBOT",      han:"\u4f60\u597d",                       end:"caesura", line:0, sur:0},
+  {spk:null,         han:"\u4f60\u597d\u5417",                 end:"barline", line:2, sur:2},
+  {spk:"Brackets",   han:"\u673a\u5668\u4eba\u4f60\u597d",     end:"caesura", line:3, sur:3},
+  {spk:null,         han:"\u4f60\u597d\u5417",                 end:"barline", line:5, sur:5},
+  {spk:"Characters", han:"\u5b57\u6bcd",                       end:"barline", line:6, sur:6},
+  {spk:"Jesus!",     han:"\u4e07\u5c81",                       end:"final",   line:8, sur:7},
+];
+const GLOSS = {"\u4f60\u597d":"hello","\u4f60\u597d\u5417":"how are you?",
+  "\u673a\u5668\u4eba":"robot","\u5b57\u6bcd":"alphabet","\u4e07\u5c81":"long live!",
+  "\u4f60":"you","\u597d":"good","\u5417":"(question)","\u673a":"machine",
+  "\u5668":"device","\u4eba":"person","\u5b57":"character","\u6bcd":"mother",
+  "\u4e07":"ten thousand","\u5c81":"years"};
+function translate(t){
+  let out=[],i=0;
+  while(i<t.length){
+    let hit=false;
+    for(const n of [3,2,1]){ const k=t.slice(i,i+n);
+      if(GLOSS[k]){ out.push(GLOSS[k]); i+=n; hit=true; break; } }
+    if(!hit){ out.push("?"+t[i]); i++; }
+  }
+  return out.join(" ");
+}
+
+const RATE=44100, CHORD=0.70, CAESURA=0.45, BARLINE=0.30, ECHAR=0.18;
+const ORG={bands:[523.251,261.626,130.813], base:31};      // Fokker, 4' 8' 16'
+const ENG={bands:[2349.32,1174.66,587.33],  base:19};      // pianissimo surtitle machine
+const dig=(v,b)=>[Math.floor(v/(b*b)), Math.floor(v/b)%b, v%b];
+const und=(d,b)=>String.fromCodePoint(d[0]*b*b+d[1]*b+d[2]);
+const kf=(m,v,step)=>m.bands[v]*Math.pow(2,step/m.base);
+
+/* schedules */
+let t=0; const organ=[], eng=[], phraseAt=[];
+SCORE.forEach((p,pi)=>{
+  phraseAt.push(t);
+  for(const ch of p.han){ organ.push({t0:t,dur:CHORD,ch,pi}); t+=CHORD; }
+  const e=translate(p.han);
+  let et=phraseAt[pi];
+  for(const c of e){ eng.push({t0:et,dur:ECHAR,ch:c,pi}); et+=ECHAR; }
+  t += p.end==="caesura"?CAESURA : p.end==="barline"?BARLINE : 0;
+});
+const TOTAL=Math.max(t, eng[eng.length-1].t0+ECHAR)+0.4;
+
+/* ---------------- synthesis ---------------- */
+const N=Math.ceil(TOTAL*RATE);
+const orgBuf=new Float32Array(N), engBuf=new Float32Array(N);
+const PART=[[1,1.0],[2,.05],[3,.03],[4,.02]];
+function pipe(buf,f,o,n,amp){
+  const atk=Math.floor(.022*RATE), rel=Math.floor(.045*RATE);
+  for(let i=0;i<n && o+i<buf.length;i++){
+    const tt=i/RATE;
+    let env = i<atk ? i/atk : (n-i<rel ? Math.max(0,(n-i)/rel) : 1);
+    let v=0; for(const [h,a] of PART) v+=a*Math.sin(2*Math.PI*f*h*tt);
+    if(i<atk) v+=.18*(1-i/atk)*Math.sin(2*Math.PI*f*6.1*tt);
+    buf[o+i]+=amp*env*v;
+  }
+}
+function tone(buf,f,o,n,amp){
+  const r=Math.floor(.02*RATE);
+  for(let i=0;i<n && o+i<buf.length;i++){
+    const env=Math.min(1,i/r)*Math.min(1,Math.max(0,(n-i)/r));
+    buf[o+i]+=amp*env*Math.sin(2*Math.PI*f*i/RATE);
+  }
+}
+for(const e of organ){
+  const d=dig(e.ch.codePointAt(0),31), o=Math.floor(e.t0*RATE), n=Math.floor(e.dur*RATE);
+  for(let v=0;v<3;v++) pipe(orgBuf,kf(ORG,v,d[v]),o,n,0.30);
+}
+for(const e of eng){
+  const d=dig(e.ch.codePointAt(0),19), o=Math.floor(e.t0*RATE), n=Math.floor(e.dur*RATE);
+  for(let v=0;v<3;v++) tone(engBuf,kf(ENG,v,d[v]),o,n,0.055);   // pianissimo
+}
+let peak=0; for(let i=0;i<N;i++){ const m=Math.abs(orgBuf[i]+engBuf[i]); if(m>peak)peak=m; }
+const mix=new Float32Array(N);
+for(let i=0;i<N;i++) mix[i]=(orgBuf[i]+engBuf[i])/(peak||1)*0.92;
+
+/* ---------------- the ear ---------------- */
+function goertzel(s,off,n,f){
+  const k=Math.round(n*f/RATE), c=2*Math.cos(2*Math.PI*k/n);
+  let s1=0,s2=0;
+  for(let i=0;i<n;i++){ const s0=s[off+i]+c*s1-s2; s2=s1; s1=s0; }
+  return s1*s1+s2*s2-c*s1*s2;
+}
+function readChord(buf,m,t0,dur,guard){
+  const o=Math.floor((t0+dur*guard)*RATE), n=Math.floor(dur*(1-2*guard)*RATE), d=[];
+  for(let v=0;v<3;v++){
+    let best=-1,bi=0;
+    for(let s=0;s<m.base;s++){ const e=goertzel(buf,o,n,kf(m,v,s)); if(e>best){best=e;bi=s;} }
+    d.push(bi);
+  }
+  return und(d,m.base);
+}
+
+/* ---------------- overlays ---------------- */
+const plate=document.getElementById('plate');
+const LY=0.858, X0=0.2249, DX=0.04359;          // lyric row, first column, spacing
+const TY=0.1266, DY=0.0234;                      // first text line, line pitch
+const cols=organ.map((e,i)=>{
+  const d=document.createElement('div'); d.className='col';
+  d.style.left=(X0+i*DX-0.016)*100+'%'; d.style.top=(LY-0.019)*100+'%';
+  d.style.width='3.2%'; d.style.height='3.8%';
+  plate.appendChild(d); return d;
+});
+function tick(x,y){
+  const d=document.createElement('div'); d.className='ov tick';
+  d.style.left=x*100+'%'; d.style.top=y*100+'%'; d.style.fontSize='1.05vw';
+  d.textContent='\u2713'; plate.appendChild(d); return d;
+}
+const scriptTicks=SCORE.map(p=>tick(0.020, TY+p.line*DY-0.004));
+const surTicks   =SCORE.map(p=>tick(0.549, TY+p.sur *DY-0.004));
+const verdict=document.getElementById('verdict');
+verdict.style.fontSize='0.85vw';
+
+/* ---------------- playback + live verification ---------------- */
+let ac=null, heardHan=[], heardEng=[], done=0;
+document.getElementById('play').onclick=async function(){
+  ac=new (window.AudioContext||window.webkitAudioContext)();
+  await ac.resume(); this.classList.add('gone');
+  const b=ac.createBuffer(1,N,RATE); b.getChannelData(0).set(mix);
+  const src=ac.createBufferSource(); src.buffer=b; src.connect(ac.destination);
+  const t0=ac.currentTime+0.08; src.start(t0);
+
+  let oi=0, ei=0;
+  (function step(){
+    const now=ac.currentTime-t0;
+    while(oi<organ.length && now>=organ[oi].t0+organ[oi].dur*0.9){
+      const e=organ[oi];
+      heardHan[e.pi]=(heardHan[e.pi]||"")+readChord(orgBuf,ORG,e.t0,e.dur,0.12);
+      cols[oi].classList.add('on'); oi++;
+    }
+    while(ei<eng.length && now>=eng[ei].t0+eng[ei].dur*0.9){
+      const e=eng[ei];
+      heardEng[e.pi]=(heardEng[e.pi]||"")+readChord(engBuf,ENG,e.t0,e.dur,0.15);
+      ei++;
+    }
+    cols.forEach((c,i)=>{ if(i<oi-1) c.classList.add('done'); });
+    SCORE.forEach((p,pi)=>{
+      if(heardHan[pi] && heardHan[pi].length===p.han.length && !scriptTicks[pi].classList.contains('on')){
+        scriptTicks[pi].classList.add('on'); surTicks[pi].classList.add('on'); done++;
+      }
+    });
+    if(now<TOTAL) requestAnimationFrame(step); else report();
+  })();
+};
+
+function report(){
+  let ok=true, lines=[];
+  SCORE.forEach((p,pi)=>{
+    const han=heardHan[pi]||"", en=(heardEng[pi]||"");
+    const agree = han===p.han && en.trim()===translate(p.han).trim();
+    ok = ok && agree;
+    lines.push((agree?"\u2713 ":"\u2717 ")+han+"  \u2194  "+en);
+  });
+  verdict.innerHTML="<b>CROSS-VERIFIED</b> \u00b7 base 31 organ \u2194 base 19 pianissimo<br>"
+    + lines.join("<br>")
+    + "<br>"+(ok?"both machines agree on all "+organ.length+" characters"
+                :"the machines disagree");
+  verdict.classList.add('on');
+}
+</script>
+</body>
+</html>
